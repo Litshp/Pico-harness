@@ -1,8 +1,9 @@
 import hashlib
 import json
-import locale as locale_module
+import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 1.0
 DEFAULT_MAX_NEW_TOKENS = 64
 DEFAULT_TIMEZONE = "Asia/Shanghai"
+DEFAULT_LOCALE = "C.UTF-8"
 
 REQUIRED_BENCHMARK_KEYS = ("schema_version", "tasks")
 REQUIRED_TASK_KEYS = (
@@ -120,10 +122,16 @@ def _git_value(args, fallback="", cwd=None):
 
 
 def _current_locale():
-    try:
-        return locale_module.setlocale(locale_module.LC_CTYPE)
-    except Exception:
-        return locale_module.getdefaultlocale()[0] or "C"
+    return DEFAULT_LOCALE
+
+
+def _benchmark_env():
+    env = dict(os.environ)
+    executable_dir = str(Path(sys.executable).parent)
+    env["PATH"] = executable_dir + os.pathsep + env.get("PATH", "")
+    env["LANG"] = DEFAULT_LOCALE
+    env["LC_ALL"] = DEFAULT_LOCALE
+    return env
 
 
 def _now_in_timezone(timezone_name):
@@ -386,6 +394,7 @@ class BenchmarkEvaluator:
         max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
         timezone_name=DEFAULT_TIMEZONE,
         model_client_factory=None,
+        repo_root=None,
     ):
         self.benchmark_path = Path(benchmark_path)
         self.artifact_path = Path(artifact_path)
@@ -399,7 +408,7 @@ class BenchmarkEvaluator:
         self.max_new_tokens = max_new_tokens
         self.timezone_name = timezone_name
         self.model_client_factory = model_client_factory
-        self.repo_root = self.benchmark_path.resolve().parent.parent
+        self.repo_root = Path(repo_root).resolve() if repo_root is not None else self.benchmark_path.resolve().parent.parent
 
     def load(self):
         return load_benchmark(self.benchmark_path, repo_root=self.repo_root)
@@ -408,6 +417,10 @@ class BenchmarkEvaluator:
         benchmark = self.load()
         rows = [self.run_task(task) for task in benchmark["tasks"]]
         summary = summarize_rows(rows)
+        try:
+            benchmark_source = str(self.benchmark_path.resolve().relative_to(self.repo_root))
+        except ValueError:
+            benchmark_source = str(self.benchmark_path.resolve())
         artifact = {
             "schema_version": BENCHMARK_SCHEMA_VERSION,
             "captured_at": _now_in_timezone(self.timezone_name),
@@ -416,7 +429,7 @@ class BenchmarkEvaluator:
                 "branch": _git_value(["branch", "--show-current"], cwd=self.repo_root),
             },
             "benchmark": {
-                "source": str(self.benchmark_path.resolve().relative_to(self.repo_root)),
+                "source": benchmark_source,
                 "task_count": len(benchmark["tasks"]),
             },
             "reproducibility": {
@@ -495,6 +508,39 @@ class BenchmarkEvaluator:
             shell=True,
             capture_output=True,
             text=True,
+            env=_benchmark_env(),
+        )
+
+        trace_path = agent.run_store.trace_path(task_state)
+        trace_events = [
+            json.loads(line)
+            for line in trace_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        malformed_response_count = sum(
+            1
+            for event in trace_events
+            if event.get("event") == "model_parsed" and event.get("kind") == "retry"
+        )
+        native_tool_call_count = sum(
+            1
+            for event in trace_events
+            if event.get("event") == "model_parsed"
+            and event.get("kind") == "tool"
+            and event.get("tool_protocol") == "native"
+        )
+        patch_failure_count = sum(
+            1
+            for event in trace_events
+            if event.get("event") == "tool_executed"
+            and event.get("name") in {"patch_file", "patch_file_v2"}
+            and event.get("tool_status") in {"error", "rejected", "partial_success"}
+        )
+        verification_failure_count = sum(
+            1
+            for event in trace_events
+            if event.get("event") == "tool_executed"
+            and event.get("tool_error_code") == "verification_failed"
         )
 
         within_budget = task_state.tool_steps <= int(task["step_budget"])
@@ -537,6 +583,10 @@ class BenchmarkEvaluator:
             "non_failure_stop_reason": non_failure_stop_reason,
             "tool_steps": task_state.tool_steps,
             "attempts": task_state.attempts,
+            "malformed_response_count": malformed_response_count,
+            "native_tool_call_count": native_tool_call_count,
+            "patch_failure_count": patch_failure_count,
+            "verification_failure_count": verification_failure_count,
             "final_answer": final_answer,
             "stop_reason": task_state.stop_reason,
             "initial_history_empty": initial_history_empty,

@@ -4,6 +4,7 @@ Pico 就是包在模型外面的控制循环：负责组 prompt、解析模型�
 校验并执行工具、写 trace、更新工作记忆，以及在合适的时候停下来。
 """
 
+import difflib
 import json
 import hashlib
 import os
@@ -18,6 +19,7 @@ from . import security as securitylib
 from .context_manager import ContextManager
 from .checkpoint import CHECKPOINT_NONE_STATUS
 from .prompt_prefix import build_prompt_prefix, tool_signature
+from .providers.protocol import ModelCompletion, tool_definitions
 from .run_store import RunStore
 from .security import REDACTED_VALUE
 from .session_store import SessionStore
@@ -213,8 +215,18 @@ class Pico:
     def tool_signature(self):
         return tool_signature(self.tools)
 
+    def supports_native_tools(self):
+        return bool(getattr(self.model_client, "supports_native_tools", False))
+
+    def native_tool_definitions(self):
+        return tool_definitions(self.tools) if self.supports_native_tools() else []
+
     def build_prefix(self):
-        return build_prompt_prefix(workspace=self.workspace, tools=self.tools)
+        return build_prompt_prefix(
+            workspace=self.workspace,
+            tools=self.tools,
+            native_tools=self.supports_native_tools(),
+        )
 
     def _apply_prefix_state(self, prefix_state):
         self.prefix_state = prefix_state
@@ -344,6 +356,7 @@ class Pico:
                 "workspace_changed": refresh["workspace_changed"],
                 "prefix_changed": refresh["prefix_changed"],
                 "prompt_cache_supported": bool(getattr(self.model_client, "supports_prompt_cache", False)),
+                "tool_protocol": "native" if self.supports_native_tools() else "text",
                 "resume_status": self.resume_state.get("status", CHECKPOINT_NONE_STATUS),
                 "stale_summary_invalidations": int(self.resume_state.get("stale_summary_invalidations", 0)),
                 "stale_paths": list(self.resume_state.get("stale_paths", [])),
@@ -373,7 +386,17 @@ class Pico:
             if not path.is_file():
                 continue
             try:
-                snapshot[path.relative_to(self.root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+                data = path.read_bytes()
+                text = None
+                if len(data) <= 128_000:
+                    try:
+                        text = data.decode("utf-8")
+                    except UnicodeDecodeError:
+                        text = None
+                snapshot[path.relative_to(self.root).as_posix()] = {
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "text": text,
+                }
             except Exception:
                 continue
         return snapshot
@@ -395,13 +418,35 @@ class Pico:
                 summaries.append(f"modified:{path}")
         return changed_paths, summaries
 
+    @staticmethod
+    def render_workspace_diff(before, after, changed_paths, limit=3000):
+        chunks = []
+        for path in changed_paths:
+            before_entry = before.get(path, {})
+            after_entry = after.get(path, {})
+            before_text = before_entry.get("text") if isinstance(before_entry, dict) else None
+            after_text = after_entry.get("text") if isinstance(after_entry, dict) else None
+            if before_text is None and after_text is None:
+                chunks.append(f"binary-or-large:{path}")
+                continue
+            diff = difflib.unified_diff(
+                (before_text or "").splitlines(),
+                (after_text or "").splitlines(),
+                fromfile=f"a/{path}",
+                tofile=f"b/{path}",
+                lineterm="",
+                n=2,
+            )
+            chunks.extend(diff)
+        return clip("\n".join(chunks), limit)
+
     def create_checkpoint(self, task_state, user_message, trigger):
         return checkpointlib.create_checkpoint(self, task_state, user_message, trigger)
 
     def infer_next_step(self, task_state):
         return checkpointlib.infer_next_step(task_state)
 
-    def update_memory_after_tool(self, name, args, result):
+    def update_memory_after_tool(self, name, args, result, affected_paths=None):
         """把少量高价值工具结果沉淀到 working memory。
 
         为什么存在：
@@ -418,6 +463,12 @@ class Pico:
         也就是说：工具结果先进入完整历史，再由这个函数择优沉淀成轻量记忆。
         """
         if not self.feature_enabled("memory"):
+            return
+        if name == "patch_file_v2":
+            for changed_path in affected_paths or []:
+                canonical_path = self.memory.canonical_path(changed_path)
+                self.memory.remember_file(canonical_path)
+                self.memory.invalidate_file_summary(canonical_path)
             return
         path = args.get("path")
         if not path:
@@ -643,6 +694,9 @@ class Pico:
     def tool_patch_file(self, args):
         return toolkit.tool_patch_file(self.tool_context(), args)
 
+    def tool_patch_file_v2(self, args):
+        return toolkit.tool_patch_file_v2(self.tool_context(), args)
+
     def tool_delegate(self, args):
         return toolkit.tool_delegate(self.tool_context(), args)
 
@@ -712,6 +766,20 @@ class Pico:
         if raw:
             return "final", raw
         return "retry", Pico.retry_notice("model returned an empty response")
+
+    @staticmethod
+    def parse_model_response(raw):
+        if isinstance(raw, ModelCompletion):
+            if raw.tool_calls:
+                call = raw.tool_calls[0]
+                return "tool", {
+                    "name": call.name,
+                    "args": dict(call.arguments),
+                    "call_id": call.call_id,
+                    "protocol": "native",
+                }
+            return Pico.parse(raw.text)
+        return Pico.parse(raw)
 
     @staticmethod
     def retry_notice(problem=None):

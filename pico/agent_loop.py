@@ -115,12 +115,13 @@ class AgentLoop:
             agent.last_prompt_metadata = prompt_metadata
             model_started_at = time.monotonic()
             try:
-                raw = agent.model_client.complete(
-                    prompt,
-                    agent.max_new_tokens,
-                    prompt_cache_key=prompt_cache_key,
-                    prompt_cache_retention=prompt_cache_retention,
-                )
+                completion_kwargs = {
+                    "prompt_cache_key": prompt_cache_key,
+                    "prompt_cache_retention": prompt_cache_retention,
+                }
+                if agent.supports_native_tools():
+                    completion_kwargs["tools"] = agent.native_tool_definitions()
+                raw = agent.model_client.complete(prompt, agent.max_new_tokens, **completion_kwargs)
             except Exception as exc:  # noqa: BLE001 - persist provider failures before surfacing them
                 message = agent.redact_text(f"Model request failed: {exc}")
                 task_state.stop_model_error(final_answer=message, failure_message=message)
@@ -165,12 +166,13 @@ class AgentLoop:
                 prompt_metadata.update(completion_metadata)
             agent.last_completion_metadata = completion_metadata
             agent.last_prompt_metadata = prompt_metadata
-            kind, payload = agent.parse(raw)
+            kind, payload = agent.parse_model_response(raw)
             agent.emit_trace(
                 task_state,
                 "model_parsed",
                 {
                     "kind": kind,
+                    "tool_protocol": "native" if getattr(raw, "tool_calls", ()) else "text",
                     "completion_metadata": completion_metadata,
                     "duration_ms": int((time.monotonic() - model_started_at) * 1000),
                 },
@@ -184,12 +186,16 @@ class AgentLoop:
                 tool_started_at = time.monotonic()
                 tool_result = agent.execute_tool(name, args)
                 result = tool_result.content
+                history_result = result
+                diff_preview = str(tool_result.metadata.get("diff_preview", "") or "")
+                if diff_preview and "workspace_diff:" not in history_result:
+                    history_result = f"{history_result}\nworkspace_diff:\n{diff_preview}"
                 agent.record(
                     {
                         "role": "tool",
                         "name": name,
                         "args": args,
-                        "content": result,
+                        "content": history_result,
                         "created_at": now(),
                     }
                 )
@@ -200,7 +206,7 @@ class AgentLoop:
                     {
                         "name": name,
                         "args": args,
-                        "result": clip(result, 500),
+                        "result": clip(history_result, 500),
                         "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
                         **dict(tool_result.metadata or {}),
                     },

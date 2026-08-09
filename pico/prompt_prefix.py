@@ -34,23 +34,42 @@ def tool_signature(tools):
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def build_prompt_prefix(workspace, tools, built_at=None):
+def build_prompt_prefix(workspace, tools, built_at=None, native_tools=False):
     tool_lines = []
     for name, tool in tools.items():
-        fields = ", ".join(f"{key}: {value}" for key, value in tool["schema"].items())
+        fields = (
+            "structured schema supplied via API"
+            if native_tools
+            else ", ".join(f"{key}: {value}" for key, value in tool["schema"].items())
+        )
         risk = "approval required" if tool["risky"] else "safe"
         tool_lines.append(f"- {name}({fields}) [{risk}] {tool['description']}")
     tool_text = "\n".join(tool_lines)
-    examples = "\n".join(
-        [
-            '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
-            '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',
-            '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
-            '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
-            '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":20}}</tool>',
-            "<final>Done.</final>",
-        ]
-    )
+    if native_tools:
+        response_rules = """\
+        - Use the structured tools provided by the model API instead of writing tool-call markup.
+        - Call exactly one tool at a time so each result can inform the next decision.
+        - When the task is complete, return the final answer as ordinary text."""
+        examples = "Native tool schemas are supplied separately by the model API."
+    else:
+        response_rules = """\
+        - Return exactly one <tool>...</tool> or one <final>...</final>.
+        - Tool calls must look like:
+          <tool>{\"name\":\"tool_name\",\"args\":{...}}</tool>
+        - For write_file and patch_file with multi-line text, prefer XML style:
+          <tool name=\"write_file\" path=\"file.py\"><content>...</content></tool>
+        - Final answers must look like:
+          <final>your answer</final>"""
+        examples = "\n".join(
+            [
+                '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
+                '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',
+                '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
+                '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
+                '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":20}}</tool>',
+                "<final>Done.</final>",
+            ]
+        )
     # prefix 可以理解成 agent 的“工作手册”：
     # 它是谁、工具怎么调用、当前仓库是什么状态，都写在这里。
     text = textwrap.dedent(
@@ -59,13 +78,7 @@ def build_prompt_prefix(workspace, tools, built_at=None):
 
         Rules:
         - Use tools instead of guessing about the workspace.
-        - Return exactly one <tool>...</tool> or one <final>...</final>.
-        - Tool calls must look like:
-          <tool>{{"name":"tool_name","args":{{...}}}}</tool>
-        - For write_file and patch_file with multi-line text, prefer XML style:
-          <tool name="write_file" path="file.py"><content>...</content></tool>
-        - Final answers must look like:
-          <final>your answer</final>
+        {response_rules}
         - Never invent tool results.
         - Keep answers concise and concrete.
         - If the user asks you to create or update a specific file and the path is clear, use write_file or patch_file instead of repeatedly listing files.

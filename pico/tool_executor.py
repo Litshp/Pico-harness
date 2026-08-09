@@ -22,6 +22,7 @@ def _metadata(
     workspace_changed=False,
     workspace_fingerprint="",
     diff_summary=None,
+    diff_preview="",
 ):
     result = {
         "tool_status": tool_status,
@@ -32,6 +33,7 @@ def _metadata(
         "affected_paths": list(affected_paths or []),
         "workspace_changed": bool(workspace_changed),
         "diff_summary": list(diff_summary or []),
+        "diff_preview": str(diff_preview or ""),
     }
     if workspace_fingerprint:
         result["workspace_fingerprint"] = workspace_fingerprint
@@ -116,6 +118,9 @@ class ToolExecutor:
             after_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else before_snapshot
             affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
             workspace_changed = bool(affected_paths)
+            diff_preview = agent.render_workspace_diff(before_snapshot, after_snapshot, affected_paths)
+            if diff_preview and name == "patch_file_v2":
+                content = clip(f"{content}\nworkspace_diff:\n{diff_preview}")
             tool_status = "ok"
             tool_error_code = ""
             if name == "run_shell":
@@ -127,7 +132,12 @@ class ToolExecutor:
                 elif exit_code != 0:
                     tool_status = "error"
                     tool_error_code = "tool_failed"
-            agent.update_memory_after_tool(name, args, content)
+            if name == "patch_file_v2":
+                match = re.search(r"verification_exit_code:\s*(-?\d+)", content)
+                verification_exit_code = int(match.group(1)) if match else 0
+                if verification_exit_code != 0:
+                    tool_status = "partial_success"
+                    tool_error_code = "verification_failed"
             metadata = _metadata(
                 tool_status,
                 tool_error_code=tool_error_code,
@@ -137,13 +147,16 @@ class ToolExecutor:
                 workspace_changed=workspace_changed,
                 workspace_fingerprint=agent.workspace.fingerprint(),
                 diff_summary=diff_summary,
+                diff_preview=diff_preview,
             )
+            agent.update_memory_after_tool(name, args, content, affected_paths=affected_paths)
             agent.record_process_note_for_tool(name, metadata)
             return ToolExecutionResult(content=content, metadata=metadata)
         except Exception as exc:
             after_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else before_snapshot
             affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
             workspace_changed = bool(affected_paths)
+            diff_preview = agent.render_workspace_diff(before_snapshot, after_snapshot, affected_paths)
             security_event_type = "path_escape" if "path escapes workspace" in str(exc) else ""
             metadata = _metadata(
                 "partial_success" if workspace_changed else "error",
@@ -155,6 +168,7 @@ class ToolExecutor:
                 workspace_changed=workspace_changed,
                 workspace_fingerprint=agent.workspace.fingerprint(),
                 diff_summary=diff_summary,
+                diff_preview=diff_preview,
             )
             agent.record_process_note_for_tool(name, metadata)
             return ToolExecutionResult(content=f"error: tool {name} failed: {exc}", metadata=metadata)

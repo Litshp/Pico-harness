@@ -267,6 +267,22 @@ uv run pico --provider ollama --model qwen3.5:4b
 
 这些内容默认只保存在本地，不需要跟仓库一起提交。
 
+### 第一阶段可靠性能力
+
+支持原生 Tool Calling 的 provider 会接收严格 JSON Schema 工具定义，runtime 将 provider 返回的结构化调用统一转换为 Pico 工具请求。Ollama 和不支持该能力的 OpenAI-compatible endpoint 继续使用原有 `<tool>/<final>` 文本协议，因此旧 provider 与 FakeModelClient 不受影响。
+
+`patch_file_v2` 接收 workspace-bounded unified diff，可选用 SHA-256 前置条件防止覆盖已变化的文件。修改前会执行 `git apply --check`；修改后会返回实际 workspace diff，并按文件类型运行轻量 targeted verification：Python 优先运行对应 pytest、否则 compileall，JavaScript 使用 `node --check`，JSON 使用解析校验。验证失败会记录为 `partial_success`，保留现场供下一轮模型修复。旧 `write_file` 和 `patch_file` 的直接返回文本保持不变，但 Agent history、trace 和工具 metadata 会记录自动 diff。
+
+真实模型对照评测会用同一任务集、相同重复次数分别运行原生 Tool Calling 与文本协议：
+
+```bash
+.venv/bin/python scripts/run_phase1_benchmark.py \
+  --provider gpt \
+  --repetitions 3
+```
+
+结果默认写入 `artifacts/phase1-reliability-ablation.json`，包含任务通过率、verifier 通过率、平均工具步数、平均尝试次数、malformed tool rate、patch 失败数和验证失败数。该命令会调用真实 provider 并消耗 API 额度，不属于普通单元测试或 CI 默认步骤；结论应基于多次重复结果，而不是单次样本。
+
 ## 开发
 
 常用本地检查：
