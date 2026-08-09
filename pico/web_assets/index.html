@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>pico workspace</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/lucide.min.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#conversation">跳到对话</a>
+
+    <div class="app-shell" id="app-shell">
+      <div class="mobile-scrim" id="mobile-scrim" hidden></div>
+
+      <aside class="sidebar" id="sidebar" aria-label="会话导航">
+        <div class="brand-row">
+          <div class="brand-mark" aria-hidden="true">p</div>
+          <div>
+            <div class="brand-name">pico</div>
+            <div class="brand-caption">local coding agent</div>
+          </div>
+          <button class="icon-button mobile-close" id="close-sidebar" type="button" aria-label="关闭会话导航" title="关闭">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+
+        <button class="new-session-button" id="new-session" type="button">
+          <i data-lucide="square-pen"></i>
+          <span>新建会话</span>
+        </button>
+
+        <div class="sidebar-section-heading">
+          <span>最近会话</span>
+          <span class="count" id="session-count">0</span>
+        </div>
+        <nav class="session-list" id="session-list" aria-label="最近会话"></nav>
+
+        <div class="workspace-footer">
+          <div class="workspace-icon"><i data-lucide="folder-git-2"></i></div>
+          <div class="workspace-copy">
+            <span class="workspace-label">工作区</span>
+            <span class="workspace-name" id="sidebar-workspace">正在连接</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main-panel" id="conversation" tabindex="-1">
+        <header class="topbar">
+          <button class="icon-button menu-button" id="open-sidebar" type="button" aria-label="打开会话导航" title="会话">
+            <i data-lucide="panel-left"></i>
+          </button>
+          <div class="topbar-context">
+            <div class="context-line">
+              <span class="branch-icon"><i data-lucide="git-branch"></i></span>
+              <strong id="branch-name">-</strong>
+              <span class="separator" aria-hidden="true">/</span>
+              <span id="model-name">-</span>
+            </div>
+            <div class="context-path" id="workspace-path">正在连接 Pico runtime</div>
+          </div>
+          <div class="topbar-actions">
+            <div class="status-pill" id="runtime-status" role="status" aria-live="polite">
+              <span class="status-dot"></span>
+              <span>连接中</span>
+            </div>
+            <button class="icon-button" id="clear-session" type="button" aria-label="清空当前会话" title="清空会话">
+              <i data-lucide="trash-2"></i>
+            </button>
+            <button class="icon-button" id="open-runtime-settings" type="button" aria-label="切换工作区和模型" title="工作区与模型">
+              <i data-lucide="settings-2"></i>
+            </button>
+            <button class="icon-button inspector-button" id="toggle-inspector" type="button" aria-label="切换运行详情" title="运行详情" aria-expanded="false">
+              <i data-lucide="panel-right"></i>
+            </button>
+          </div>
+        </header>
+
+        <section class="message-stream" id="message-stream" aria-live="polite" aria-busy="false">
+          <div class="empty-state" id="empty-state">
+            <div class="empty-mark" aria-hidden="true">p</div>
+            <h1>准备就绪</h1>
+            <p id="empty-workspace">当前工作区</p>
+          </div>
+        </section>
+
+        <footer class="composer-region">
+          <form class="composer" id="composer">
+            <label class="sr-only" for="message-input">发送给 Pico 的消息</label>
+            <textarea id="message-input" rows="1" maxlength="12000" placeholder="描述你要完成的代码任务..." required></textarea>
+            <div class="composer-bottom">
+              <div class="composer-meta">
+                <span><i data-lucide="shield-check"></i><span id="approval-mode">ask</span></span>
+                <span><i data-lucide="list-checks"></i><span id="step-budget">6 步</span></span>
+              </div>
+              <button class="send-button" id="send-button" type="submit">
+                <i data-lucide="arrow-up"></i>
+                <span>发送</span>
+              </button>
+            </div>
+          </form>
+          <div class="composer-error" id="composer-error" role="alert" hidden></div>
+        </footer>
+      </main>
+
+      <aside class="inspector" id="inspector" aria-label="运行详情">
+        <div class="inspector-header">
+          <div>
+            <span class="eyebrow">RUN INSPECTOR</span>
+            <h2>运行详情</h2>
+          </div>
+          <button class="icon-button inspector-close" id="close-inspector" type="button" aria-label="关闭运行详情" title="关闭">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+
+        <section class="inspector-section" aria-labelledby="run-heading">
+          <div class="section-title-row">
+            <h3 id="run-heading">当前运行</h3>
+            <span class="run-state" id="run-state">idle</span>
+          </div>
+          <dl class="metric-grid">
+            <div><dt>模型调用</dt><dd id="attempt-count">0</dd></div>
+            <div><dt>工具步骤</dt><dd id="tool-count">0</dd></div>
+            <div><dt>最大步骤</dt><dd id="max-steps">6</dd></div>
+            <div><dt>最后工具</dt><dd id="last-tool">-</dd></div>
+          </dl>
+        </section>
+
+        <section class="inspector-section" aria-labelledby="runtime-heading">
+          <h3 id="runtime-heading">Runtime</h3>
+          <dl class="detail-list">
+            <div><dt>Provider</dt><dd id="provider-name">-</dd></div>
+            <div><dt>Approval</dt><dd id="detail-approval">-</dd></div>
+            <div><dt>Session</dt><dd id="session-id">-</dd></div>
+            <div><dt>Stop reason</dt><dd id="stop-reason">-</dd></div>
+          </dl>
+        </section>
+
+        <section class="inspector-section" aria-labelledby="activity-heading">
+          <h3 id="activity-heading">活动</h3>
+          <ol class="activity-list" id="activity-list">
+            <li><span class="activity-node"></span><div><strong>Runtime ready</strong><span>等待任务</span></div></li>
+          </ol>
+        </section>
+      </aside>
+    </div>
+
+    <dialog class="approval-dialog" id="approval-dialog">
+      <form method="dialog" class="dialog-content">
+        <div class="dialog-icon warning"><i data-lucide="shield-alert"></i></div>
+        <div class="dialog-heading">
+          <span class="eyebrow">APPROVAL REQUIRED</span>
+          <h2>允许执行高风险工具？</h2>
+        </div>
+        <div class="approval-tool" id="approval-tool">run_shell</div>
+        <pre class="approval-args" id="approval-args"></pre>
+        <div class="dialog-actions">
+          <button class="secondary-button" id="deny-approval" type="button">拒绝</button>
+          <button class="danger-button" id="allow-approval" type="button">
+            <i data-lucide="check"></i>
+            <span>允许一次</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="confirm-dialog" id="clear-dialog">
+      <form method="dialog" class="dialog-content compact">
+        <div class="dialog-icon"><i data-lucide="trash-2"></i></div>
+        <div class="dialog-heading">
+          <span class="eyebrow">CLEAR SESSION</span>
+          <h2>清空当前会话？</h2>
+          <p>对话历史和工作记忆会被清除。</p>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary-button" value="cancel">取消</button>
+          <button class="danger-button" id="confirm-clear" type="button">清空</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="runtime-dialog" id="runtime-dialog">
+      <form class="runtime-form" id="runtime-form">
+        <div class="dialog-topline">
+          <div class="dialog-icon"><i data-lucide="sliders-horizontal"></i></div>
+          <div class="dialog-heading">
+            <span class="eyebrow">RUNTIME CONFIGURATION</span>
+            <h2>工作区与模型</h2>
+          </div>
+          <button class="icon-button dialog-close" id="close-runtime-settings" type="button" aria-label="关闭工作区与模型设置" title="关闭">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <div class="form-field">
+          <label for="config-workspace">工作区路径 <span aria-hidden="true">*</span></label>
+          <input id="config-workspace" name="workspace" type="text" autocomplete="off" required>
+          <p>切换后使用该项目独立的 Git 状态、`.env` 和 Session。</p>
+        </div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="config-provider">模型后端 <span aria-hidden="true">*</span></label>
+            <select id="config-provider" name="provider" required>
+              <option value="deepseek">DeepSeek</option>
+              <option value="openai">OpenAI compatible</option>
+              <option value="anthropic">Anthropic compatible</option>
+              <option value="ollama">Ollama</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="config-model">模型名 <span aria-hidden="true">*</span></label>
+            <input id="config-model" name="model" type="text" autocomplete="off" required>
+          </div>
+        </div>
+        <div class="form-field">
+          <label for="config-endpoint" id="config-endpoint-label">自定义 API 地址</label>
+          <input id="config-endpoint" name="endpoint" type="url" autocomplete="url" placeholder="留空时使用该后端的默认地址">
+          <p id="config-endpoint-help">仅在需要代理或自定义兼容端点时填写。</p>
+        </div>
+        <div class="dialog-actions settings-actions">
+          <div class="form-error" id="config-error" role="alert" hidden></div>
+          <button class="secondary-button" id="cancel-runtime-settings" type="button">取消</button>
+          <button class="send-button" id="apply-runtime-settings" type="submit">
+            <i data-lucide="refresh-cw"></i>
+            <span>切换运行时</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>
