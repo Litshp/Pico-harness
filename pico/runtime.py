@@ -25,6 +25,7 @@ from .security import REDACTED_VALUE
 from .session_store import SessionStore
 from .tool_context import ToolContext
 from .tool_executor import ToolExecutor
+from .sandbox import build_sandbox_executor
 from . import tools as toolkit
 from .workspace import IGNORED_PATH_NAMES, MAX_HISTORY, WorkspaceContext, clip, now
 
@@ -79,10 +80,13 @@ class Pico:
         feature_flags=None,
         allowed_tools=None,
         approval_callback=None,
+        sandbox_mode="disabled",
     ):
         self.model_client = model_client
         self.workspace = workspace
         self.root = Path(workspace.repo_root)
+        self.sandbox_mode = str(sandbox_mode or "auto").strip().lower()
+        self.sandbox_executor = build_sandbox_executor(self.root, mode=self.sandbox_mode)
         self.session_store = session_store
         self.approval_policy = approval_policy
         self.max_steps = max_steps
@@ -652,6 +656,7 @@ class Pico:
             depth=self.depth,
             max_depth=self.max_depth,
             spawn_delegate=self.spawn_delegate,
+            sandbox_executor=self.sandbox_executor,
         )
 
     def spawn_delegate(self, args):
@@ -669,6 +674,7 @@ class Pico:
             read_only=True,
             secret_env_names=self.secret_env_names,
             shell_env_allowlist=self.shell_env_allowlist,
+            sandbox_mode=self.sandbox_mode,
         )
         # 委派的目标是“调查”，不是“放权执行”。
         # 子 agent 以只读方式运行、步数更少，最后只把结论文本返回给父 agent。

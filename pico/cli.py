@@ -255,6 +255,7 @@ def build_agent(args):
             max_steps=args.max_steps,
             max_new_tokens=args.max_new_tokens,
             secret_env_names=configured_secret_names,
+            sandbox_mode=getattr(args, "sandbox", "auto"),
         )
     else:
         agent = Pico(
@@ -265,6 +266,7 @@ def build_agent(args):
             max_steps=args.max_steps,
             max_new_tokens=args.max_new_tokens,
             secret_env_names=configured_secret_names,
+            sandbox_mode=getattr(args, "sandbox", "auto"),
         )
     provider = _effective_provider(args)
     agent.web_config = {
@@ -331,6 +333,12 @@ def build_arg_parser():
     )
     parser.add_argument("--max-steps", type=int, default=6, help="Maximum tool/model iterations per request.")
     parser.add_argument("--max-new-tokens", type=int, default=512, help="Maximum model output tokens per step.")
+    parser.add_argument(
+        "--sandbox",
+        choices=("auto", "seatbelt", "disabled"),
+        default="auto",
+        help="OS sandbox for run_shell: auto-detect Seatbelt on macOS, force it, or disable it.",
+    )
     parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature sent to Ollama.")
     parser.add_argument("--top-p", type=float, default=0.9, help="Top-p sampling value sent to Ollama.")
     parser.add_argument("--web", action="store_true", help="Start the local web interface instead of the terminal REPL.")

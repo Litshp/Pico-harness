@@ -271,17 +271,21 @@ def tool_run_shell(context, args):
     timeout = int(args.get("timeout", 20))
     if timeout < 1 or timeout > 120:
         raise ValueError("timeout must be in [1, 120]")
-    result = subprocess.run(
-        command,
-        cwd=context.root,
-        shell=True,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        # 这里传入的是过滤后的环境变量，而不是直接继承整个父 shell 环境，
-        # 目的是减少敏感信息被意外带进命令执行环境的风险。
-        env=context.shell_env(),
-    )
+    # 沙箱执行器负责 OS 级隔离；显式 disabled 时才回退到原有受限环境执行。
+    if context.sandbox_executor is not None:
+        result = context.sandbox_executor.run(command, timeout=timeout, env=context.shell_env())
+    else:
+        result = subprocess.run(
+            command,
+            cwd=context.root,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            # 这里传入的是过滤后的环境变量，而不是直接继承整个父 shell 环境，
+            # 目的是减少敏感信息被意外带进命令执行环境的风险。
+            env=context.shell_env(),
+        )
     return textwrap.dedent(
         f"""\
         exit_code: {result.returncode}
