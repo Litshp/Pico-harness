@@ -101,17 +101,47 @@ class ToolExecutor:
                 ),
             )
 
-        if tool["risky"] and not agent.approve(name, args):
-            return ToolExecutionResult(
-                content=f"error: approval denied for {name}",
-                metadata=_metadata(
-                    "rejected",
-                    tool_error_code="approval_denied",
-                    security_event_type="read_only_block" if agent.read_only else "approval_denied",
-                    risk_level="high",
-                    read_only=False,
-                ),
-            )
+        approval_request = None
+        if tool["risky"]:
+            approved = agent.approve(name, args)
+            approval_request = getattr(agent, "_last_approval_request", None)
+            if not approved:
+                request_metadata = {
+                    key: value
+                    for key, value in (approval_request or {}).items()
+                    if not key.startswith("_")
+                }
+                return ToolExecutionResult(
+                    content=f"error: approval denied for {name}",
+                    metadata=_metadata(
+                        "rejected",
+                        tool_error_code="approval_denied",
+                        security_event_type="read_only_block" if agent.read_only else "approval_denied",
+                        risk_level="high",
+                        read_only=False,
+                        affected_paths=request_metadata.get("affected_paths"),
+                        workspace_fingerprint=request_metadata.get("workspace_fingerprint", ""),
+                        diff_preview=request_metadata.get("diff_preview", ""),
+                    ),
+                )
+            if approval_request:
+                current, _ = agent.approval_snapshot_status(approval_request, name, args)
+                if not current:
+                    metadata = _metadata(
+                        "rejected",
+                        tool_error_code="approval_stale",
+                        security_event_type="approval_stale",
+                        risk_level="high",
+                        read_only=False,
+                        affected_paths=approval_request.get("affected_paths"),
+                        workspace_fingerprint=approval_request.get("workspace_fingerprint", ""),
+                        diff_preview=approval_request.get("diff_preview", ""),
+                    )
+                    agent.record_process_note_for_tool(name, metadata)
+                    return ToolExecutionResult(
+                        content=f"error: approval is stale for {name}; review the updated request",
+                        metadata=metadata,
+                    )
 
         before_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else {}
         after_snapshot = before_snapshot

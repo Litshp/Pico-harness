@@ -15,6 +15,7 @@
   let historySignature = "";
   let sessionSignature = "";
   let pendingApprovalId = "";
+  let pendingApprovalSnapshot = null;
   let toastTimer = null;
 
   function refreshIcons() {
@@ -225,13 +226,20 @@
   function renderApproval(pending) {
     if (!pending) {
       pendingApprovalId = "";
+      pendingApprovalSnapshot = null;
       if (approvalDialog.open) approvalDialog.close();
       return;
     }
     if (pending.id === pendingApprovalId && approvalDialog.open) return;
     pendingApprovalId = pending.id;
+    pendingApprovalSnapshot = pending;
     setText("#approval-tool", pending.tool);
     setText("#approval-args", JSON.stringify(pending.args || {}, null, 2));
+    const paths = (pending.affected_paths || []).join(", ") || "未声明路径（Shell 命令）";
+    setText("#approval-meta", `风险：${pending.risk_level || "high"} · 影响：${paths}`);
+    const diff = $("#approval-diff");
+    diff.textContent = pending.diff_preview || "无文件差异预览";
+    diff.hidden = !pending.diff_preview;
     if (!approvalDialog.open) approvalDialog.showModal();
   }
 
@@ -347,7 +355,15 @@
     $("#allow-approval").disabled = true;
     $("#deny-approval").disabled = true;
     try {
-      await api("/api/approval", { method: "POST", body: JSON.stringify({ id, approved }) });
+      await api("/api/approval", {
+        method: "POST",
+        body: JSON.stringify({
+          id,
+          approved,
+          args_hash: pendingApprovalSnapshot?.args_hash,
+          workspace_fingerprint: pendingApprovalSnapshot?.workspace_fingerprint,
+        }),
+      });
       approvalDialog.close();
       pendingApprovalId = "";
     } catch (error) {

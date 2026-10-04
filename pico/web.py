@@ -36,16 +36,16 @@ class ApprovalBroker:
         self._pending = None
         self._decision = None
 
-    def request(self, name, args):
+    def request(self, name, args=None):
+        if isinstance(name, dict) and args is None:
+            request = dict(name)
+        else:
+            request = {"tool": str(name), "args": dict(args or {})}
         with self._condition:
             self._counter += 1
-            approval_id = f"approval-{self._counter}"
-            self._pending = {
-                "id": approval_id,
-                "tool": str(name),
-                "args": dict(args or {}),
-                "created_at": now(),
-            }
+            request["id"] = f"approval-{self._counter}"
+            request["created_at"] = now()
+            self._pending = request
             self._decision = None
             self._condition.notify_all()
             deadline = time.monotonic() + self.timeout
@@ -60,9 +60,20 @@ class ApprovalBroker:
             self._condition.notify_all()
             return approved
 
-    def resolve(self, approval_id, approved):
+    def resolve(self, approval_id, approved, args_hash=None, workspace_fingerprint=None):
         with self._condition:
             if not self._pending or self._pending["id"] != str(approval_id):
+                return False
+            # Keep the direct broker API backward-compatible.  The HTTP
+            # endpoint validates that snapshot fields are present before it
+            # reaches this method.
+            if self._pending.get("args_hash") and args_hash is not None and args_hash != self._pending["args_hash"]:
+                return False
+            if (
+                self._pending.get("workspace_fingerprint")
+                and workspace_fingerprint is not None
+                and workspace_fingerprint != self._pending["workspace_fingerprint"]
+            ):
                 return False
             self._decision = bool(approved)
             self._condition.notify_all()
@@ -324,7 +335,22 @@ def build_web_server(agent, host="127.0.0.1", port=8765, approval_timeout=300, a
                     self._send_json({"status": "accepted"}, HTTPStatus.ACCEPTED)
                     return
                 if path == "/api/approval":
-                    resolved = runtime.approvals.resolve(payload.get("id"), payload.get("approved"))
+                    pending = runtime.approvals.snapshot()
+                    if pending and (
+                        (pending.get("args_hash") and not payload.get("args_hash"))
+                        or (
+                            pending.get("workspace_fingerprint")
+                            and not payload.get("workspace_fingerprint")
+                        )
+                    ):
+                        self._send_json({"error": "approval snapshot is required"}, HTTPStatus.CONFLICT)
+                        return
+                    resolved = runtime.approvals.resolve(
+                        payload.get("id"),
+                        payload.get("approved"),
+                        args_hash=payload.get("args_hash"),
+                        workspace_fingerprint=payload.get("workspace_fingerprint"),
+                    )
                     if not resolved:
                         self._send_json({"error": "approval is no longer pending"}, HTTPStatus.CONFLICT)
                         return

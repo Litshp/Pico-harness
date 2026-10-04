@@ -5,6 +5,7 @@ Pico 就是包在模型外面的控制循环：负责组 prompt、解析模型�
 """
 
 import difflib
+import inspect
 import json
 import hashlib
 import os
@@ -444,6 +445,80 @@ class Pico:
             chunks.extend(diff)
         return clip("\n".join(chunks), limit)
 
+    @staticmethod
+    def _approval_args_hash(args):
+        encoded = json.dumps(
+            args or {},
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _snapshot_fingerprint(snapshot):
+        encoded = json.dumps(snapshot or {}, ensure_ascii=True, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _approval_diff_preview(self, name, args):
+        """Build a side-effect-free preview for the approval screen."""
+        if name == "patch_file_v2":
+            return self.redact_text(clip(str(args.get("patch", "")), 6000))
+
+        if name not in {"write_file", "patch_file"}:
+            return ""
+        raw_path = str(args.get("path", ""))
+        path = self.path(raw_path)
+        try:
+            before = path.read_text(encoding="utf-8") if path.is_file() else ""
+        except (OSError, UnicodeDecodeError):
+            return f"binary-or-unreadable:{path.relative_to(self.root).as_posix()}"
+        if name == "write_file":
+            after = str(args.get("content", ""))
+        else:
+            old_text = str(args.get("old_text", ""))
+            after = before.replace(old_text, str(args.get("new_text", "")), 1)
+        diff = difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=f"a/{path.relative_to(self.root).as_posix()}",
+            tofile=f"b/{path.relative_to(self.root).as_posix()}",
+            lineterm="",
+            n=2,
+        )
+        return self.redact_text(clip("\n".join(diff), 6000))
+
+    def build_approval_request(self, name, args):
+        """Bind approval to the exact arguments and workspace seen by the user."""
+        args = args or {}
+        affected_paths = []
+        if name in {"write_file", "patch_file"}:
+            affected_paths = [self.path(args.get("path", "")).relative_to(self.root).as_posix()]
+        elif name == "patch_file_v2":
+            affected_paths = toolkit._validate_unified_patch(self.tool_context(), str(args.get("patch", "")))
+        snapshot = self.capture_workspace_snapshot()
+        request = {
+            "id": "approval-" + uuid.uuid4().hex,
+            "tool": str(name),
+            "args": self.redact_artifact(dict(args or {})),
+            "args_hash": self._approval_args_hash(args),
+            "workspace_fingerprint": self._snapshot_fingerprint(snapshot),
+            "affected_paths": affected_paths,
+            "diff_preview": self._approval_diff_preview(name, args),
+            "risk_level": "high" if self.tools.get(name, {}).get("risky") else "low",
+        }
+        return request
+
+    def approval_snapshot_status(self, request, name, args):
+        current_hash = self._approval_args_hash(args)
+        if current_hash != request.get("args_hash"):
+            return False, "arguments changed"
+        current_fingerprint = self._snapshot_fingerprint(self.capture_workspace_snapshot())
+        if current_fingerprint != request.get("workspace_fingerprint"):
+            return False, "workspace changed"
+        return True, ""
+
     def create_checkpoint(self, task_state, user_message, trigger):
         return checkpointlib.create_checkpoint(self, task_state, user_message, trigger)
 
@@ -709,12 +784,29 @@ class Pico:
     def approve(self, name, args):
         if self.read_only:
             return False
+        self._last_approval_request = self.build_approval_request(name, args)
         if self.approval_policy == "auto":
             return True
         if self.approval_policy == "never":
             return False
         if callable(self.approval_callback):
-            return bool(self.approval_callback(name, args))
+            callback = self.approval_callback
+            try:
+                parameters = list(inspect.signature(callback).parameters.values())
+                positional = [
+                    item
+                    for item in parameters
+                    if item.kind
+                    in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+                ]
+                accepts_one = len(positional) == 1 or (
+                    len(positional) >= 2 and positional[1].default is not inspect.Parameter.empty
+                )
+            except (TypeError, ValueError):
+                accepts_one = False
+            if accepts_one:
+                return bool(callback(self._last_approval_request))
+            return bool(callback(name, args))
         try:
             answer = input(f"approve {name} {json.dumps(args, ensure_ascii=True)}? [y/N] ")
         except EOFError:

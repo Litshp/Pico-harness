@@ -1049,7 +1049,9 @@ dialog::backdrop {
 }
 
 .approval-tool,
+.approval-meta,
 .approval-args,
+.approval-diff,
 .dialog-actions {
   grid-column: 1 / -1;
 }
@@ -1075,6 +1077,27 @@ dialog::backdrop {
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.approval-meta {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.approval-diff {
+  max-height: 240px;
+  overflow: auto;
+  margin: -8px 0 0;
+  padding: 13px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
   white-space: pre-wrap;
 }
 
