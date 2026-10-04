@@ -15,6 +15,7 @@ from functools import partial
 from pathlib import Path
 
 from .workspace import IGNORED_PATH_NAMES
+from .command_policy import validate_shell_command
 
 BASE_TOOL_SPECS = {
     "list_files": {
@@ -139,6 +140,7 @@ def validate_tool(context, name, args):
         command = str(args.get("command", "")).strip()
         if not command:
             raise ValueError("command must not be empty")
+        validate_shell_command(command)
         timeout = int(args.get("timeout", 20))
         if timeout < 1 or timeout > 120:
             raise ValueError("timeout must be in [1, 120]")

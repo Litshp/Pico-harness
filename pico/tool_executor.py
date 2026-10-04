@@ -76,7 +76,9 @@ class ToolExecutor:
             message = f"error: invalid arguments for {name}: {exc}"
             if example:
                 message += f"\nexample: {example}"
-            security_event_type = "path_escape" if "path escapes workspace" in str(exc) else ""
+            security_event_type = "path_escape" if "path escapes workspace" in str(exc) else (
+                "dangerous_command" if "safety policy" in str(exc) else ""
+            )
             return ToolExecutionResult(
                 content=message,
                 metadata=_metadata(
@@ -157,7 +159,9 @@ class ToolExecutor:
             affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
             workspace_changed = bool(affected_paths)
             diff_preview = agent.render_workspace_diff(before_snapshot, after_snapshot, affected_paths)
-            security_event_type = "path_escape" if "path escapes workspace" in str(exc) else ""
+            security_event_type = "path_escape" if "path escapes workspace" in str(exc) else (
+                "dangerous_command" if "safety policy" in str(exc) else ""
+            )
             metadata = _metadata(
                 "partial_success" if workspace_changed else "error",
                 tool_error_code="tool_partial_success" if workspace_changed else "tool_failed",
