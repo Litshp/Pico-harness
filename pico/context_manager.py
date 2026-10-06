@@ -41,6 +41,31 @@ def _tail_clip(text, limit):
     return text[: limit - 3] + "..."
 
 
+def _prefix_clip(text, limit):
+    """Keep the stable manual and the complete recovery checkpoint visible."""
+    text = str(text)
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+
+    marker = "\n\nTask checkpoint:"
+    marker_index = text.find(marker)
+    if marker_index < 0:
+        return _tail_clip(text, limit)
+
+    checkpoint = text[marker_index + 2 :]
+    if len(checkpoint) >= limit:
+        head_budget = max(1, (limit - 3) // 2)
+        tail_budget = max(1, limit - head_budget - 3)
+        return checkpoint[:head_budget] + "..." + checkpoint[-tail_budget:]
+
+    prefix_budget = limit - len(checkpoint) - 3
+    if prefix_budget <= 0:
+        return "..." + checkpoint[-(limit - 3) :]
+    return text[:prefix_budget] + "..." + checkpoint
+
+
 @dataclass
 class SectionRender:
     raw: str
@@ -98,6 +123,9 @@ class ContextManager:
         """
         user_message = str(user_message)
         self.section_floors = self._compute_section_floors()
+        context_selection = None
+        if hasattr(self.agent, "select_context"):
+            context_selection = self.agent.select_context(user_message)
         memory_enabled = True
         relevant_memory_enabled = True
         context_reduction_enabled = True
@@ -105,8 +133,22 @@ class ContextManager:
             memory_enabled = self.agent.feature_enabled("memory")
             relevant_memory_enabled = self.agent.feature_enabled("relevant_memory")
             context_reduction_enabled = self.agent.feature_enabled("context_reduction")
+        prefix_state = getattr(self.agent, "prefix_state", None)
+        stable_prefix = str(getattr(prefix_state, "stable_text", "") or "")
+        full_prefix = str(getattr(self.agent, "prefix", ""))
+        if not stable_prefix or not full_prefix.startswith(stable_prefix):
+            # Tests/integrations may replace agent.prefix directly; preserve
+            # that explicit override instead of silently restoring old state.
+            stable_prefix = full_prefix
+        dynamic_prefix = full_prefix[len(stable_prefix):].lstrip() if full_prefix.startswith(stable_prefix) else ""
+        selected_tool_text = ""
+        if hasattr(self.agent, "render_selected_tools"):
+            selected_tool_text = self.agent.render_selected_tools(
+                getattr(context_selection, "tool_names", None) if context_selection else None
+            )
+        dynamic_parts = [part for part in (selected_tool_text, dynamic_prefix) if part]
         section_texts = {
-            "prefix": str(getattr(self.agent, "prefix", "")),
+            "prefix": stable_prefix + (("\n\n" + "\n\n".join(dynamic_parts)) if dynamic_parts else ""),
             "memory": "Memory:\n- disabled" if not memory_enabled else str(self.agent.memory_text()),
             "history": "",
             CURRENT_REQUEST_SECTION: f"Current user request:\n{user_message}",
@@ -115,15 +157,23 @@ class ContextManager:
         if hasattr(self.agent, "render_checkpoint_text"):
             checkpoint_text = str(self.agent.render_checkpoint_text() or "").strip()
         if checkpoint_text:
-            # Checkpoint is dynamic recovery state, so keep it ahead of the
-            # larger tool manual when the prefix section must be reduced.
-            section_texts["prefix"] = checkpoint_text + "\n\n" + section_texts["prefix"]
+            # Checkpoint is dynamic recovery state; append it after the stable
+            # manual so checkpoint updates preserve the reusable prefix.
+            section_texts["prefix"] += "\n\n" + checkpoint_text
         selected_notes = []
         if memory_enabled and relevant_memory_enabled and hasattr(self.agent, "memory") and hasattr(self.agent.memory, "retrieval_candidates"):
-            selected_notes = self.agent.memory.retrieval_candidates(user_message, limit=RELEVANT_MEMORY_LIMIT)
+            selected_notes = list(getattr(context_selection, "memory_notes", []) or [])
+            if context_selection is None or getattr(context_selection, "fallback", True):
+                selected_notes = self.agent.memory.retrieval_candidates(user_message, limit=RELEVANT_MEMORY_LIMIT)
+            elif not selected_notes:
+                selected_notes = []
 
         if not context_reduction_enabled:
-            rendered = self._render_sections_without_reduction(section_texts, selected_notes=selected_notes)
+            rendered = self._render_sections_without_reduction(
+                section_texts,
+                selected_notes=selected_notes,
+                selected_history_indices=getattr(context_selection, "history_indices", None) if context_selection else None,
+            )
             prompt = self._assemble_prompt(rendered)
             metadata = self._metadata(
                 prompt=prompt,
@@ -133,11 +183,18 @@ class ContextManager:
                 selected_notes=selected_notes,
                 user_message=user_message,
                 section_texts=section_texts,
+                context_selection=context_selection,
             )
             return prompt, metadata
 
         budgets = dict(self.section_budgets)
-        rendered = self._render_sections(section_texts, budgets, selected_notes=selected_notes)
+        selected_history_indices = getattr(context_selection, "history_indices", None) if context_selection else None
+        rendered = self._render_sections(
+            section_texts,
+            budgets,
+            selected_notes=selected_notes,
+            selected_history_indices=selected_history_indices,
+        )
         prompt = self._assemble_prompt(rendered)
         reduction_log = []
 
@@ -165,7 +222,12 @@ class ContextManager:
                     }
                 )
                 budgets[section] = new_budget
-                rendered = self._render_sections(section_texts, budgets, selected_notes=selected_notes)
+                rendered = self._render_sections(
+                    section_texts,
+                    budgets,
+                    selected_notes=selected_notes,
+                    selected_history_indices=selected_history_indices,
+                )
                 prompt = self._assemble_prompt(rendered)
                 reduced = True
                 break
@@ -180,10 +242,11 @@ class ContextManager:
             selected_notes=selected_notes,
             user_message=user_message,
             section_texts=section_texts,
+            context_selection=context_selection,
         )
         return prompt, metadata
 
-    def _render_sections_without_reduction(self, section_texts, selected_notes=None):
+    def _render_sections_without_reduction(self, section_texts, selected_notes=None, selected_history_indices=None):
         selected_notes = selected_notes or []
         relevant_lines = ["Relevant memory:"]
         if selected_notes:
@@ -192,6 +255,8 @@ class ContextManager:
             relevant_lines.append("- none")
         relevant_raw = "\n".join(relevant_lines)
         history = list(getattr(self.agent, "session", {}).get("history", []))
+        if selected_history_indices is not None:
+            history = [history[index] for index in selected_history_indices if 0 <= index < len(history)]
         history_raw = self._raw_history_text(history)
         return {
             "prefix": SectionRender(raw=section_texts["prefix"], budget=len(section_texts["prefix"]), rendered=section_texts["prefix"], details={}),
@@ -225,7 +290,7 @@ class ContextManager:
         floors.update(self._section_floor_overrides)
         return floors
 
-    def _render_sections(self, section_texts, budgets, selected_notes=None):
+    def _render_sections(self, section_texts, budgets, selected_notes=None, selected_history_indices=None):
         rendered = {}
         for section in SECTION_ORDER:
             budget = budgets.get(section)
@@ -235,10 +300,15 @@ class ContextManager:
             elif section == "relevant_memory":
                 rendered[section] = self._render_relevant_memory(selected_notes or [], int(budget or 0))
             elif section == "history":
-                rendered[section] = self._render_history_section(int(budget or 0))
+                rendered[section] = self._render_history_section(
+                    int(budget or 0), selected_history_indices=selected_history_indices
+                )
             else:
                 raw = section_texts[section]
-                rendered_text = _tail_clip(raw, int(budget)) if budget is not None else raw
+                if section == "prefix" and budget is not None:
+                    rendered_text = _prefix_clip(raw, int(budget))
+                else:
+                    rendered_text = _tail_clip(raw, int(budget)) if budget is not None else raw
                 rendered[section] = SectionRender(raw=raw, budget=int(budget) if budget is not None else 0, rendered=rendered_text, details={})
         return rendered
 
@@ -296,8 +366,10 @@ class ContextManager:
         usable = max(0, budget - overhead)
         return max(1, usable // note_count)
 
-    def _render_history_section(self, budget):
+    def _render_history_section(self, budget, selected_history_indices=None):
         history = list(getattr(self.agent, "session", {}).get("history", []))
+        if selected_history_indices is not None:
+            history = [history[index] for index in selected_history_indices if 0 <= index < len(history)]
         raw = self._raw_history_text(history)
         if not history:
             rendered = "Transcript:\n- empty"
@@ -455,7 +527,7 @@ class ContextManager:
             ]
         ).strip()
 
-    def _metadata(self, prompt, rendered, budgets, reduction_log, selected_notes, user_message, section_texts):
+    def _metadata(self, prompt, rendered, budgets, reduction_log, selected_notes, user_message, section_texts, context_selection=None):
         section_metadata = {}
         for section in SECTION_ORDER[:-1]:
             section_metadata[section] = {
@@ -507,5 +579,9 @@ class ContextManager:
                 "raw_chars": len(user_message),
                 "rendered_chars": len(user_message),
                 "section_chars": len(rendered[CURRENT_REQUEST_SECTION].rendered),
+            },
+            "context_selection": context_selection.to_metadata() if context_selection is not None else {
+                "source": "legacy",
+                "fallback": True,
             },
         }

@@ -83,6 +83,9 @@ def evaluate_resume_state(agent):
                     continue
                 if saved_identity.get(key) != current_identity.get(key):
                     mismatch_fields.append(key)
+            saved_history_version = checkpoint.get("history_version")
+            if saved_history_version is not None and int(saved_history_version) != len(agent.session.get("history", [])):
+                mismatch_fields.append("history_version")
             mismatch_fields.sort()
             if stale_paths:
                 status = CHECKPOINT_PARTIAL_STALE_STATUS
@@ -116,12 +119,21 @@ def render_checkpoint_text(agent):
         f"- Resume status: {agent.resume_state.get('status', CHECKPOINT_NONE_STATUS)}",
         f"- Current goal: {checkpoint.get('current_goal', '-') or '-'}",
         f"- Current blocker: {checkpoint.get('current_blocker', '-') or '-'}",
-        f"- Next step: {checkpoint.get('next_step', '-') or '-'}",
+        f"- Key files: {', '.join(str(item.get('path', '')).strip() for item in checkpoint.get('key_files', []) if str(item.get('path', '')).strip()) or '-'}",
     ]
-    key_files = [str(item.get("path", "")).strip() for item in checkpoint.get("key_files", []) if str(item.get("path", "")).strip()]
-    lines.append(f"- Key files: {', '.join(key_files) or '-'}")
     if checkpoint.get("completed"):
         lines.append("- Completed: " + " | ".join(str(item) for item in checkpoint.get("completed", [])))
+    if checkpoint.get("completed_actions"):
+        lines.append("- Completed actions: " + " | ".join(
+            f"{item.get('tool', 'tool')}({clip(str(item.get('result', '')), 120)})"
+            for item in checkpoint.get("completed_actions", [])[-6:]
+        ))
+    if checkpoint.get("modified_files"):
+        lines.append("- Modified files: " + ", ".join(str(item) for item in checkpoint.get("modified_files", [])))
+    if checkpoint.get("tests_run"):
+        lines.append("- Tests run: " + " | ".join(str(item) for item in checkpoint.get("tests_run", [])[-4:]))
+    if checkpoint.get("known_failures"):
+        lines.append("- Known failures: " + " | ".join(str(item) for item in checkpoint.get("known_failures", [])[-4:]))
     if checkpoint.get("excluded"):
         lines.append("- Excluded: " + " | ".join(str(item) for item in checkpoint.get("excluded", [])))
     if agent.resume_state.get("stale_paths"):
@@ -129,6 +141,9 @@ def render_checkpoint_text(agent):
     summary = str(checkpoint.get("summary", "")).strip()
     if summary:
         lines.append(f"- Summary: {summary}")
+    # Keep the actionable continuation at the end so tail-based context
+    # clipping retains it when older workspace details consume the prefix budget.
+    lines.append(f"- Next step: {checkpoint.get('next_step', '-') or '-'}")
     return "\n".join(lines)
 
 
@@ -152,6 +167,30 @@ def create_checkpoint(agent, task_state, user_message, trigger):
         file_freshness = memorylib.file_freshness(path, agent.root)
         freshness[path] = file_freshness
         key_files.append({"path": path, "freshness": file_freshness})
+    history = list(agent.session.get("history", []))
+    completed_actions = [
+        {
+            "tool": str(item.get("name", "")),
+            "args": dict(item.get("args", {}) or {}),
+            "result": clip(str(item.get("content", "")), 240),
+        }
+        for item in history
+        if item.get("role") == "tool" and str(item.get("name", "")).strip()
+    ]
+    tests_run = [
+        str(item.get("args", {}).get("command", "")).strip()
+        for item in history
+        if item.get("role") == "tool"
+        and item.get("name") == "run_shell"
+        and any(token in str(item.get("args", {}).get("command", "")).lower() for token in ("test", "pytest", "check"))
+    ]
+    known_failures = [
+        clip(str(item.get("content", "")), 240)
+        for item in history
+        if item.get("role") == "tool"
+        and any(marker in str(item.get("content", "")).lower() for marker in ("error", "failed", "traceback", "rejected"))
+    ]
+    selection = getattr(agent, "current_context_selection", None)
     checkpoint = {
         "checkpoint_id": checkpoint_id,
         "parent_checkpoint_id": current.get("checkpoint_id", "") if current else "",
@@ -166,6 +205,18 @@ def create_checkpoint(agent, task_state, user_message, trigger):
         "freshness": freshness,
         "summary": f"{trigger}: {clip(str(user_message), 120)}",
         "runtime_identity": current_runtime_identity(agent),
+        # Structured resume facts make continuation independent from a full transcript.
+        "constraints": {
+            "approval_policy": agent.approval_policy,
+            "read_only": bool(agent.read_only),
+            "max_steps": int(agent.max_steps),
+        },
+        "completed_actions": completed_actions,
+        "modified_files": list(agent.memory.to_dict()["working"]["recent_files"]),
+        "tests_run": tests_run,
+        "known_failures": known_failures,
+        "history_version": len(history),
+        "context_selection": selection.to_metadata() if selection is not None else {},
     }
     state["items"][checkpoint_id] = checkpoint
     state["current_id"] = checkpoint_id

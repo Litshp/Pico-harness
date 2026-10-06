@@ -57,3 +57,23 @@ def test_evaluate_resume_state_distinguishes_no_checkpoint_full_valid_and_schema
 
     agent.session["checkpoints"]["items"]["ckpt_valid"]["schema_version"] = "old"
     assert evaluate_resume_state(agent)["status"] == CHECKPOINT_SCHEMA_MISMATCH_STATUS
+
+
+def test_checkpoint_contains_structured_resume_facts_and_context_selection(tmp_path):
+    agent = build_agent(tmp_path, ["<final>done</final>"])
+    agent.memory.remember_file("README.md")
+    agent.record({"role": "tool", "name": "run_shell", "args": {"command": "pytest -q"}, "content": "passed", "created_at": "1"})
+    agent.current_context_selection = type("Selection", (), {"to_metadata": lambda self: {"source": "jev", "tool_names": ["run_shell"]}})()
+
+    task_state = agent.current_task_state
+    if task_state is None:
+        from pico.task_state import TaskState
+
+        task_state = TaskState.create(task_id="task_test", user_request="run tests", run_id="run_test")
+    checkpoint = agent.create_checkpoint(task_state, "run tests", trigger="test")
+
+    assert checkpoint["constraints"]["approval_policy"] == "auto"
+    assert checkpoint["modified_files"] == ["README.md"]
+    assert checkpoint["tests_run"] == ["pytest -q"]
+    assert checkpoint["history_version"] == 1
+    assert checkpoint["context_selection"]["source"] == "jev"

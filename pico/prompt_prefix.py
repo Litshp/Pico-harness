@@ -17,6 +17,9 @@ class PromptPrefix:
     workspace_fingerprint: str
     tool_signature: str
     built_at: str
+    # stable_text is the cacheable rules/tool manual without workspace state.
+    stable_text: str = ""
+    stable_hash: str = ""
 
 
 def tool_signature(tools):
@@ -34,9 +37,10 @@ def tool_signature(tools):
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def build_prompt_prefix(workspace, tools, built_at=None, native_tools=False):
+def build_prompt_prefix(workspace, tools, built_at=None, native_tools=False, include_tool_catalog=True):
     tool_lines = []
-    for name, tool in tools.items():
+    for name in sorted(tools):
+        tool = tools[name]
         fields = (
             "structured schema supplied via API"
             if native_tools
@@ -70,9 +74,9 @@ def build_prompt_prefix(workspace, tools, built_at=None, native_tools=False):
                 "<final>Done.</final>",
             ]
         )
-    # prefix 可以理解成 agent 的“工作手册”：
-    # 它是谁、工具怎么调用、当前仓库是什么状态，都写在这里。
-    text = textwrap.dedent(
+    # Split the static manual from the changing workspace snapshot. The cache
+    # key is bound only to the stable part so state updates do not invalidate it.
+    stable_text = textwrap.dedent(
         f"""\
         You are pico, a small local coding agent working inside a local repository.
 
@@ -89,14 +93,17 @@ def build_prompt_prefix(workspace, tools, built_at=None, native_tools=False):
         - Required tool arguments must not be empty. Do not call read_file, write_file, patch_file, run_shell, or delegate with args={{}}.
 
         Tools:
-        {tool_text}
+        {tool_text if include_tool_catalog else "Tool schemas are selected for each turn and rendered in the dynamic context section."}
 
         Valid response examples:
         {examples}
 
-        {workspace.text()}
         """
     ).strip()
+    workspace_text = workspace.text().strip()
+    text = stable_text
+    if workspace_text:
+        text += "\n\n" + workspace_text
     signature = tool_signature(tools)
     return PromptPrefix(
         text=text,
@@ -104,4 +111,6 @@ def build_prompt_prefix(workspace, tools, built_at=None, native_tools=False):
         workspace_fingerprint=workspace.fingerprint(),
         tool_signature=signature,
         built_at=built_at or now(),
+        stable_text=stable_text,
+        stable_hash=hashlib.sha256(stable_text.encode("utf-8")).hexdigest(),
     )
