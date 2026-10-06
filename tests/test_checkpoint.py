@@ -76,4 +76,31 @@ def test_checkpoint_contains_structured_resume_facts_and_context_selection(tmp_p
     assert checkpoint["modified_files"] == ["README.md"]
     assert checkpoint["tests_run"] == ["pytest -q"]
     assert checkpoint["history_version"] == 1
+    assert checkpoint["history_digest"]
     assert checkpoint["context_selection"]["source"] == "jev"
+
+
+def test_resume_rejects_history_digest_drift(tmp_path):
+    agent = build_agent(tmp_path)
+    identity = current_runtime_identity(agent)
+    agent.session["history"] = [{"role": "user", "content": "original"}]
+    from pico.checkpoint import history_digest
+
+    agent.session["checkpoints"] = {
+        "current_id": "ckpt_history",
+        "items": {
+            "ckpt_history": {
+                "checkpoint_id": "ckpt_history",
+                "schema_version": CHECKPOINT_SCHEMA_VERSION,
+                "key_files": [],
+                "runtime_identity": identity,
+                "history_version": 1,
+                "history_digest": history_digest(agent.session["history"]),
+            }
+        },
+    }
+    agent.session["history"][0]["content"] = "changed"
+
+    state = evaluate_resume_state(agent)
+    assert state["status"] != CHECKPOINT_FULL_VALID_STATUS
+    assert "history_digest" in state["runtime_identity_mismatch_fields"]
