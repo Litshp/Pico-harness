@@ -1,5 +1,7 @@
 """Checkpoint and resume-state helpers."""
 
+import hashlib
+import json
 import uuid
 
 from .features import memory as memorylib
@@ -44,6 +46,20 @@ def current_runtime_identity(agent):
     }
 
 
+def history_digest(history):
+    """Return a stable digest for resume validation without storing full history."""
+    payload = [
+        {
+            "role": item.get("role", ""),
+            "name": item.get("name", ""),
+            "args": item.get("args", {}),
+            "content": str(item.get("content", "")),
+        }
+        for item in history
+    ]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
+
+
 def checkpoint_state(agent):
     agent._ensure_session_shape()
     return agent.session["checkpoints"]
@@ -86,6 +102,9 @@ def evaluate_resume_state(agent):
             saved_history_version = checkpoint.get("history_version")
             if saved_history_version is not None and int(saved_history_version) != len(agent.session.get("history", [])):
                 mismatch_fields.append("history_version")
+            saved_history_digest = str(checkpoint.get("history_digest", "")).strip()
+            if saved_history_digest and saved_history_digest != history_digest(agent.session.get("history", [])):
+                mismatch_fields.append("history_digest")
             mismatch_fields.sort()
             if stale_paths:
                 status = CHECKPOINT_PARTIAL_STALE_STATUS
@@ -216,6 +235,7 @@ def create_checkpoint(agent, task_state, user_message, trigger):
         "tests_run": tests_run,
         "known_failures": known_failures,
         "history_version": len(history),
+        "history_digest": history_digest(history),
         "context_selection": selection.to_metadata() if selection is not None else {},
     }
     state["items"][checkpoint_id] = checkpoint
