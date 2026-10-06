@@ -120,7 +120,13 @@ class AgentLoop:
                     "prompt_cache_retention": prompt_cache_retention,
                 }
                 if agent.supports_native_tools():
-                    completion_kwargs["tools"] = agent.native_tool_definitions()
+                    completion_kwargs["tools"] = agent.native_tool_definitions(
+                        getattr(agent, "current_tool_names", None)
+                    )
+                if getattr(agent.model_client, "prompt_cache_strategy", "") == "breakpoint":
+                    completion_kwargs["prompt_cache_breakpoint"] = len(
+                        getattr(agent.prefix_state, "stable_text", agent.prefix)
+                    )
                 raw = agent.model_client.complete(prompt, agent.max_new_tokens, **completion_kwargs)
             except Exception as exc:  # noqa: BLE001 - persist provider failures before surfacing them
                 message = agent.redact_text(f"Model request failed: {exc}")
@@ -164,6 +170,13 @@ class AgentLoop:
                 # 把后端返回的 usage/cache 统计并回 prompt_metadata，
                 # 方便统一写入 report 和 trace。
                 prompt_metadata.update(completion_metadata)
+                # Some test doubles and compatible gateways only reveal cache
+                # support in the completion metadata. Align the legacy
+                # prefix_hash field with the stable cache key in that case.
+                if completion_metadata.get("prompt_cache_supported"):
+                    prompt_metadata["prefix_hash"] = prompt_metadata.get(
+                        "prompt_cache_key", prompt_metadata.get("prefix_hash")
+                    )
             agent.last_completion_metadata = completion_metadata
             agent.last_prompt_metadata = prompt_metadata
             kind, payload = agent.parse_model_response(raw)

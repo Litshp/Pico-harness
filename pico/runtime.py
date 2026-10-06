@@ -19,6 +19,7 @@ from .features import memory as memorylib
 from . import security as securitylib
 from .context_manager import ContextManager
 from .checkpoint import CHECKPOINT_NONE_STATUS
+from .jev_selector import JevContextSelector, ContextSelection
 from .prompt_prefix import build_prompt_prefix, tool_signature
 from .providers.protocol import ModelCompletion, tool_definitions
 from .run_store import RunStore
@@ -117,6 +118,9 @@ class Pico:
         )
         self.session["memory"] = self.memory.to_dict()
         self.tools = self._apply_tool_allowlist(self.build_tools())
+        self.jev_selector = JevContextSelector(self)
+        self.current_context_selection = ContextSelection(tool_names=tuple(sorted(self.tools)))
+        self.current_tool_names = tuple(sorted(self.tools))
         self.tool_executor = ToolExecutor(self)
         self.prefix_state = self.build_prefix()
         self.prefix = self.prefix_state.text
@@ -223,15 +227,48 @@ class Pico:
     def supports_native_tools(self):
         return bool(getattr(self.model_client, "supports_native_tools", False))
 
-    def native_tool_definitions(self):
-        return tool_definitions(self.tools) if self.supports_native_tools() else []
+    def native_tool_definitions(self, names=None):
+        if not self.supports_native_tools():
+            return []
+        selected = tuple(names or self.current_tool_names)
+        tools = {name: self.tools[name] for name in selected if name in self.tools}
+        return tool_definitions(tools)
 
     def build_prefix(self):
         return build_prompt_prefix(
             workspace=self.workspace,
             tools=self.tools,
             native_tools=self.supports_native_tools(),
+            include_tool_catalog=False,
         )
+
+    def select_context(self, user_message):
+        notes = []
+        if self.feature_enabled("relevant_memory") and hasattr(self.memory, "retrieval_candidates"):
+            notes = self.memory.retrieval_candidates(user_message, limit=3)
+        selection = self.jev_selector.select(
+            user_message,
+            self.tools,
+            self.session.get("history", []),
+            notes,
+        )
+        self.current_context_selection = selection
+        self.current_tool_names = tuple(selection.tool_names)
+        return selection
+
+    def render_selected_tools(self, names=None):
+        names = tuple(names if names is not None else self.current_tool_names)
+        if not names:
+            return "Tools for this turn:\n- none"
+        lines = ["Tools for this turn:"]
+        for name in names:
+            tool = self.tools.get(name)
+            if not tool:
+                continue
+            schema = ", ".join(f"{key}: {value}" for key, value in tool["schema"].items())
+            risk = "approval required" if tool["risky"] else "safe"
+            lines.append(f"- {name}({schema}) [{risk}] {tool['description']}")
+        return "\n".join(lines)
 
     def _apply_prefix_state(self, prefix_state):
         self.prefix_state = prefix_state
@@ -344,6 +381,8 @@ class Pico:
         prompt, metadata = self.context_manager.build(user_message)
         # 这里把“这轮 prompt 是怎么拼出来的”连同缓存相关状态一起记下来，
         # 后面 trace/report 才能解释清楚：为什么这一轮 prefix 变了、缓存有没有命中。
+        cache_supported = bool(getattr(self.model_client, "supports_prompt_cache", False))
+        stable_prefix_hash = getattr(self.prefix_state, "stable_hash", self.prefix_state.hash)
         metadata.update(
             {
                 "prefix_chars": len(self.prefix),
@@ -354,13 +393,26 @@ class Pico:
                 "tool_count": len(self.tools),
                 "workspace_docs": len(self.workspace.project_docs),
                 "recent_commits": len(self.workspace.recent_commits),
-                "prefix_hash": self.prefix_state.hash,
-                "prompt_cache_key": self.prefix_state.hash,
+                # Keep the historical prefix_hash meaning for providers that
+                # cannot cache; cache-capable providers expose the reusable
+                # stable hash here and always use it as prompt_cache_key.
+                "prefix_hash": stable_prefix_hash if cache_supported else self.prefix_state.hash,
+                "full_prefix_hash": self.prefix_state.hash,
+                "stable_prefix_hash": stable_prefix_hash,
+                "prompt_cache_breakpoint": len(
+                    getattr(self.prefix_state, "stable_text", self.prefix)
+                ),
+                # Workspace and checkpoint state are dynamic and follow the
+                # stable rules/tool prefix, so the key must stay stable across
+                # normal rounds.
+                # The key identifies the reusable rules/tool prefix for every
+                # provider.  Unsupported providers simply never serialize it.
+                "prompt_cache_key": stable_prefix_hash,
                 "workspace_fingerprint": self.prefix_state.workspace_fingerprint,
                 "tool_signature": self.prefix_state.tool_signature,
                 "workspace_changed": refresh["workspace_changed"],
                 "prefix_changed": refresh["prefix_changed"],
-                "prompt_cache_supported": bool(getattr(self.model_client, "supports_prompt_cache", False)),
+                "prompt_cache_supported": cache_supported,
                 "tool_protocol": "native" if self.supports_native_tools() else "text",
                 "resume_status": self.resume_state.get("status", CHECKPOINT_NONE_STATUS),
                 "stale_summary_invalidations": int(self.resume_state.get("stale_summary_invalidations", 0)),
