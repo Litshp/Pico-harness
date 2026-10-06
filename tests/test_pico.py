@@ -1669,6 +1669,8 @@ def test_agent_records_model_cache_metadata_in_last_prompt_metadata(tmp_path):
     assert agent.last_prompt_metadata["cache_hit"] is True
     assert agent.last_prompt_metadata["prefix_hash"]
     assert agent.last_prompt_metadata["prompt_cache_key"] == agent.last_prompt_metadata["prefix_hash"]
+    assert agent.last_prompt_metadata["prompt_cache_epoch"]
+    assert agent.prompt_cache_state["hits"] == 1
 
 
 def test_recent_transcript_entries_stay_richer_than_older_ones(tmp_path):

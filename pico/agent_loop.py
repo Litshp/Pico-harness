@@ -179,6 +179,29 @@ class AgentLoop:
                     )
             agent.last_completion_metadata = completion_metadata
             agent.last_prompt_metadata = prompt_metadata
+            cache_supported = bool(completion_metadata.get("prompt_cache_supported", getattr(agent.model_client, "supports_prompt_cache", False)))
+            cache_hit = bool(completion_metadata.get("cache_hit", False))
+            agent.prompt_cache_state["requests"] = int(agent.prompt_cache_state.get("requests", 0)) + 1
+            if cache_hit:
+                agent.prompt_cache_state["hits"] = int(agent.prompt_cache_state.get("hits", 0)) + 1
+                agent.prompt_cache_state["last_status"] = "hit"
+            elif cache_supported:
+                agent.prompt_cache_state["misses"] = int(agent.prompt_cache_state.get("misses", 0)) + 1
+                agent.prompt_cache_state["last_status"] = "miss"
+            else:
+                agent.prompt_cache_state["last_status"] = "unsupported"
+            agent.emit_trace(
+                task_state,
+                "prompt_cache_observed",
+                {
+                    "supported": cache_supported,
+                    "status": agent.prompt_cache_state["last_status"],
+                    "strategy": completion_metadata.get("prompt_cache_strategy", getattr(agent.model_client, "prompt_cache_strategy", "none")),
+                    "cached_tokens": int(completion_metadata.get("cached_tokens", 0) or 0),
+                    "cache_creation_tokens": int(completion_metadata.get("cache_creation_tokens", 0) or 0),
+                    "cache_epoch": prompt_metadata.get("prompt_cache_epoch"),
+                },
+            )
             kind, payload = agent.parse_model_response(raw)
             agent.emit_trace(
                 task_state,

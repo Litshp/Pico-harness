@@ -28,6 +28,18 @@ def test_stable_prefix_hash_survives_workspace_and_checkpoint_changes():
         assert first["stable_prefix_hash"] == second["stable_prefix_hash"]
         assert first["prompt_cache_key"] == second["prompt_cache_key"]
         assert first["full_prefix_hash"] != second["full_prefix_hash"]
+        assert len(first["prompt_cache_epoch"]) == 16
+        assert first["prompt_cache_epoch"] == second["prompt_cache_epoch"]
+
+
+def test_prompt_cache_epoch_is_model_scoped(tmp_path):
+    first = _agent(tmp_path).prompt_metadata("request", "")
+    other = _agent(tmp_path)
+    other.model_client.model = "different-model"
+    second = other.prompt_metadata("request", "")
+
+    assert first["stable_prefix_hash"] == second["stable_prefix_hash"]
+    assert first["prompt_cache_epoch"] != second["prompt_cache_epoch"]
 
 
 def test_checkpoint_is_after_stable_manual_in_prompt():

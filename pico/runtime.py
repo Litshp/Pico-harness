@@ -131,6 +131,12 @@ class Pico:
         self.current_run_dir = None
         self.last_prompt_metadata = {}
         self.last_completion_metadata = {}
+        self.prompt_cache_state = {
+            "requests": 0,
+            "hits": 0,
+            "misses": 0,
+            "last_status": "unknown",
+        }
         self.last_durable_promotions = []
         self.last_durable_rejections = []
         self.last_durable_superseded = []
@@ -408,6 +414,9 @@ class Pico:
                 # The key identifies the reusable rules/tool prefix for every
                 # provider.  Unsupported providers simply never serialize it.
                 "prompt_cache_key": stable_prefix_hash,
+                "prompt_cache_epoch": hashlib.sha256(
+                    f"{getattr(self.model_client, 'model', '')}\0{stable_prefix_hash}".encode("utf-8")
+                ).hexdigest()[:16],
                 "workspace_fingerprint": self.prefix_state.workspace_fingerprint,
                 "tool_signature": self.prefix_state.tool_signature,
                 "workspace_changed": refresh["workspace_changed"],
@@ -766,6 +775,7 @@ class Pico:
             "durable_rejections": list(self.last_durable_rejections),
             "durable_superseded": list(self.last_durable_superseded),
             "redacted_env": self.detected_secret_env_summary(),
+            "prompt_cache_state": dict(self.prompt_cache_state),
         }
 
     def tool_example(self, name):
