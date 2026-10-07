@@ -121,6 +121,7 @@ class Pico:
         self.jev_selector = JevContextSelector(self)
         self.current_context_selection = ContextSelection(tool_names=tuple(sorted(self.tools)))
         self.current_tool_names = tuple(sorted(self.tools))
+        self.context_selection_active = False
         self.tool_executor = ToolExecutor(self)
         self.prefix_state = self.build_prefix()
         self.prefix = self.prefix_state.text
@@ -260,6 +261,7 @@ class Pico:
         )
         self.current_context_selection = selection
         self.current_tool_names = tuple(selection.tool_names)
+        self.context_selection_active = True
         return selection
 
     def render_selected_tools(self, names=None):
@@ -784,7 +786,7 @@ class Pico:
     def validate_tool(self, name, args):
         """把通用工具校验和 runtime 级额外约束串起来。"""
         selected = getattr(self, "current_tool_names", None)
-        if selected is not None and name not in selected:
+        if getattr(self, "context_selection_active", False) and selected is not None and name not in selected:
             raise ValueError(f"tool {name} was not selected for this turn")
         toolkit.validate_tool(self.tool_context(), name, args)
 
