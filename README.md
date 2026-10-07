@@ -23,6 +23,72 @@
   - OpenAI 兼容 Responses API
   - Anthropic 兼容 Messages API
   - DeepSeek Anthropic 兼容 API
+- 使用 TypeSafe Jev 作为快速上下文判断模型，动态选择本轮工具 Schema、History 和 Memory
+- 支持 Prompt Cache、结构化 Checkpoint/Resume，以及 `task_state.json`、`trace.jsonl`、`report.json` 运行工件
+- 采用工作区路径围栏、Shell 危险命令熔断、审批快照和 macOS Seatbelt 多层安全护栏
+
+## Agent Runtime 架构
+
+Pico 将主模型、Jev 判断模型和 Runtime 职责分开：
+
+```text
+用户请求
+   ↓
+Jev Context Selector
+   ├─ 选择本轮工具 Schema
+   ├─ 选择相关 History
+   └─ 选择相关 Memory
+   ↓
+Context Manager（预算裁剪 / 压缩 / 当前请求完整保留）
+   ↓
+主模型 Provider（生成 Tool Call 或最终答案）
+   ↓
+Sandbox / Approval / Tool Executor
+   ↓
+Memory / Checkpoint / Trace / Report
+```
+
+Jev 是 TypeSafe System One 判断模型，不负责生成代码，也不直接执行工具。它只返回结构化判断和置信度；工具白名单、参数校验、审批、路径边界、Shell 策略和 Seatbelt 仍由 Pico Runtime 强制执行。Jev 服务不可用或置信度不足时，Runtime 自动回退到确定性上下文选择，不会降低安全边界。
+
+## JEV 动态上下文
+
+Jev 在每一轮主模型调用前判断：
+
+- `tool_scope`：只加载 inspect、modify、execute、delegate 或 none 对应的工具 Schema；
+- `history_scope`：保留最近、相关或最小历史窗口；
+- `memory_scope`：决定是否带入相关工作记忆和过程笔记。
+
+这样可以避免每轮把全部工具、完整历史和无关记忆塞进 Prompt。完整工具结果仍保存在本地运行工件中，动态裁剪只影响发给模型的上下文。
+
+### 配置 JEV
+
+安装依赖：
+
+```bash
+uv sync
+```
+
+复制环境模板并填写 TypeSafe key：
+
+```bash
+cp .env.example .env
+```
+
+在 `.env` 中配置：
+
+```bash
+TYPESAFE_API_KEY="your-typesafe-api-key"
+TYPESAFE_MODEL="jev-1.12"
+PICO_JEV_ENABLED=1
+```
+
+真实 API key 只放在本地 `.env`，不要提交到 Git。关闭 JEV 时设置 `PICO_JEV_ENABLED=0`，Pico 会使用确定性回退策略继续运行。
+
+相关实现和设计说明：
+
+- [`pico/jev_selector.py`](pico/jev_selector.py)
+- [`docs/architecture/jev-context-selection.md`](docs/architecture/jev-context-selection.md)
+- [`docs/architecture/prompt-cache-context-engineering-design.md`](docs/architecture/prompt-cache-context-engineering-design.md)
 
 ## 使用截图
 
@@ -242,6 +308,16 @@ ollama serve
 ollama pull qwen3.5:4b
 uv run pico --provider ollama --model qwen3.5:4b
 ```
+
+## 近期运行时升级
+
+当前 GitHub `main` 已包含三个独立阶段的实现：
+
+1. **上下文压缩与预算裁剪**：按需装配工具、History 和 Memory，减少无关上下文。
+2. **Prompt Cache**：稳定 Prefix、模型级 cache epoch，以及 Provider 命中率 telemetry。
+3. **Checkpoint / Prompt Resume**：保存结构化任务状态，并检测 Workspace、History 和运行配置漂移。
+
+完整更新说明见 [`docs/architecture/runtime-upgrades-2026-10.md`](docs/architecture/runtime-upgrades-2026-10.md)。
 
 ## 常用交互命令
 
