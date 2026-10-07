@@ -783,6 +783,9 @@ class Pico:
 
     def validate_tool(self, name, args):
         """把通用工具校验和 runtime 级额外约束串起来。"""
+        selected = getattr(self, "current_tool_names", None)
+        if selected is not None and name not in selected:
+            raise ValueError(f"tool {name} was not selected for this turn")
         toolkit.validate_tool(self.tool_context(), name, args)
 
     def tool_context(self):
