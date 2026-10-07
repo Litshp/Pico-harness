@@ -308,6 +308,9 @@ class Pico:
     def memory_text(self):
         return self.memory.render_memory_text()
 
+    def working_memory_text(self):
+        return self.memory.render_working_memory_text()
+
     def history_text(self):
         history = self.session["history"]
         if not history:

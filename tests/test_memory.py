@@ -67,6 +67,19 @@ def test_file_summaries_use_canonical_paths_and_freshness(tmp_path):
     assert "sample.txt" not in memory.to_dict()["file_summaries"]
 
 
+def test_working_memory_render_excludes_episodic_notes():
+    memory = LayeredMemory()
+    memory.set_task_summary("Inspect runtime")
+    memory.remember_file("runtime.py")
+    memory.append_note("A reusable process fact", tags=("process",))
+
+    text = memory.render_working_memory_text()
+
+    assert "Inspect runtime" in text
+    assert "runtime.py" in text
+    assert "A reusable process fact" not in text
+
+
 def test_process_notes_keep_kind_and_latest_duplicate_wins():
     memory = LayeredMemory()
 

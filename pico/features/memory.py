@@ -586,6 +586,30 @@ def render_memory_text(state, workspace_root=None):
     return "\n".join(lines)
 
 
+def render_working_memory_text(state, workspace_root=None):
+    """Render only the short-lived task working set.
+
+    Episodic and durable notes are deliberately excluded.  This is the
+    context used by Jev's ``working`` memory scope; it keeps current task
+    facts and fresh file summaries without recalling cross-turn notes.
+    """
+    state = normalize_memory_state(state, workspace_root)
+    lines = [
+        "Working memory:",
+        f"- task: {state['working']['task_summary'] or '-'}",
+        f"- recent_files: {', '.join(state['working']['recent_files']) or '-'}",
+    ]
+    summaries = []
+    for path in state["working"]["recent_files"][:FILE_SUMMARY_LIMIT]:
+        summary = state["file_summaries"].get(path, {})
+        current_freshness = file_freshness(path, workspace_root)
+        if summary.get("summary", "") and summary.get("freshness") == current_freshness:
+            summaries.append(f"- {path}: {summary['summary']}")
+    lines.append("- file_summaries:")
+    lines.extend(f"  {line}" for line in summaries) if summaries else lines.append("  -")
+    return "\n".join(lines)
+
+
 def is_effectively_empty(state, workspace_root=None):
     state = normalize_memory_state(state, workspace_root)
     return (
@@ -649,6 +673,9 @@ class LayeredMemory:
 
     def render_memory_text(self):
         return render_memory_text(self.state, self.workspace_root)
+
+    def render_working_memory_text(self):
+        return render_working_memory_text(self.state, self.workspace_root)
 
     def promote_durable(self, promotions):
         if self.durable_store is None:

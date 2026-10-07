@@ -1,5 +1,5 @@
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
-from pico.jev_selector import JevContextSelector
+from pico.jev_selector import ContextSelection, JevContextSelector
 
 
 class _Answer:
@@ -67,3 +67,31 @@ def test_jev_failure_falls_back_without_changing_execution_contract(tmp_path):
     assert set(metadata["context_selection"]["tool_names"]) == set(agent.tools)
     # JEV can reduce context, but it never changes Pico's real tool registry.
     assert set(agent.tools) >= {"read_file", "write_file", "run_shell"}
+
+
+def test_working_and_none_memory_scopes_change_prompt_sections(tmp_path):
+    agent = _agent(tmp_path)
+    agent.memory.set_task_summary("current task")
+    agent.memory.append_note("episodic fact", tags=("fact",))
+
+    working = ContextSelection(
+        tool_names=tuple(sorted(agent.tools)),
+        history_indices=(),
+        memory_scope="working",
+    )
+    agent.select_context = lambda _: working
+    working_prompt, _ = agent._build_prompt_and_metadata("continue")
+    assert "current task" in working_prompt
+    assert "episodic fact" not in working_prompt
+    assert "Working memory:" in working_prompt
+
+    none = ContextSelection(
+        tool_names=tuple(sorted(agent.tools)),
+        history_indices=(),
+        memory_scope="none",
+    )
+    agent.select_context = lambda _: none
+    none_prompt, _ = agent._build_prompt_and_metadata("answer")
+    assert "current task" not in none_prompt
+    assert "episodic fact" not in none_prompt
+    assert "Memory:\n- disabled" in none_prompt

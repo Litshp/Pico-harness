@@ -147,9 +147,16 @@ class ContextManager:
                 getattr(context_selection, "tool_names", None) if context_selection else None
             )
         dynamic_parts = [part for part in (selected_tool_text, dynamic_prefix) if part]
+        memory_scope = getattr(context_selection, "memory_scope", "relevant") if context_selection else "relevant"
+        if not memory_enabled or memory_scope == "none":
+            memory_text = "Memory:\n- disabled"
+        elif memory_scope == "working" and hasattr(self.agent, "working_memory_text"):
+            memory_text = str(self.agent.working_memory_text())
+        else:
+            memory_text = str(self.agent.memory_text())
         section_texts = {
             "prefix": stable_prefix + (("\n\n" + "\n\n".join(dynamic_parts)) if dynamic_parts else ""),
-            "memory": "Memory:\n- disabled" if not memory_enabled else str(self.agent.memory_text()),
+            "memory": memory_text,
             "history": "",
             CURRENT_REQUEST_SECTION: f"Current user request:\n{user_message}",
         }

@@ -25,6 +25,7 @@ class ContextSelection:
     tool_names: tuple[str, ...]
     history_indices: tuple[int, ...] | None = None
     memory_notes: list[dict] = field(default_factory=list)
+    memory_scope: str = "relevant"
     source: str = "fallback"
     confidence: float = 0.0
     fallback: bool = True
@@ -39,6 +40,7 @@ class ContextSelection:
             "tool_names": list(self.tool_names),
             "history_indices": list(self.history_indices) if self.history_indices is not None else None,
             "memory_note_count": len(self.memory_notes),
+            "memory_scope": self.memory_scope,
         }
 
 
@@ -79,6 +81,7 @@ class JevContextSelector:
             tool_names=tuple(sorted(tools)),
             history_indices=None,
             memory_notes=list(notes),
+            memory_scope="relevant",
             source="fallback",
             confidence=0.0,
             fallback=True,
@@ -184,6 +187,7 @@ class JevContextSelector:
                 tool_names=selected_tools,
                 history_indices=history_indices,
                 memory_notes=selected_notes,
+                memory_scope=memory_scope,
                 source="jev",
                 confidence=confidence,
                 fallback=False,
